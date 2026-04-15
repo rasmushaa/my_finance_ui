@@ -61,6 +61,11 @@ uv sync --group dev
 scripts/run_local_terminal.sh
 ```
 
+4. Test local Docker build + runtime (before pushing/deploying):
+```bash
+scripts/test_local_docker.sh
+```
+
 Alternative:
 ```bash
 PYTHONPATH="$PWD" uv run streamlit run src/app.py --server.port 8080 --server.headless=true
