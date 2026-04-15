@@ -5,7 +5,6 @@
 # BRANCH LOGIC:
 # - main branch         → build + deploy to production environment (ENV=prod)
 # - stg branch          → build + deploy to staging environment (ENV=stg)
-# - feature/* branches  → compile/validate only (no deployment)
 #
 # DOCKER IMAGE:
 # - Single-stage build; dependencies installed via uv inside the image
@@ -41,7 +40,6 @@ on:
     branches:
       - main
       - stg
-      - feature/*
 
 jobs:
   build-and-deploy:
@@ -59,16 +57,16 @@ jobs:
             echo "IMAGE_URI=${{ secrets.GCP_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/my-finance/streamlit-prod:latest" >> "$GITHUB_ENV"
             echo "API_BASE_URL=${{ secrets.API_BASE_URL_PROD }}" >> "$GITHUB_ENV"
             echo "REDIRECT_URI=${{ secrets.REDIRECT_URI_PROD }}" >> "$GITHUB_ENV"
-            echo "SHOULD_DEPLOY=true" >> "$GITHUB_ENV"
+
           elif [ "${{ github.ref_name }}" = "stg" ]; then
             echo "ENV=stg" >> "$GITHUB_ENV"
             echo "IMAGE_URI=${{ secrets.GCP_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/my-finance/streamlit-stg:latest" >> "$GITHUB_ENV"
             echo "API_BASE_URL=${{ secrets.API_BASE_URL_STG }}" >> "$GITHUB_ENV"
             echo "REDIRECT_URI=${{ secrets.REDIRECT_URI_STG }}" >> "$GITHUB_ENV"
-            echo "SHOULD_DEPLOY=true" >> "$GITHUB_ENV"
+
           else
-            echo "ENV=dev" >> "$GITHUB_ENV"
-            echo "SHOULD_DEPLOY=false" >> "$GITHUB_ENV"
+            echo "Branch does not trigger deployment. Only 'main' and 'stg' branches are allowed for deployment."
+            exit 1
           fi
 
       - name: Checkout repository
@@ -89,23 +87,7 @@ jobs:
       - name: Configure Docker auth
         run: gcloud auth configure-docker "${{ secrets.GCP_LOCATION }}-docker.pkg.dev"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Create virtual environment
-        run: uv venv 
-
-      - name: Install dependencies
-        run: |
-          uv sync --group dev
-          python --version
-          uv pip list
-
-      - name: Run tests
-        run: uv run pytest
-
       - name: Write Cloud Run env vars file
-        if: env.SHOULD_DEPLOY == 'true'
         run: |
           cat <<EOF > env-vars.yaml
           API_BASE_URL: "${{ env.API_BASE_URL }}"
@@ -115,13 +97,11 @@ jobs:
           EOF
 
       - name: Build and push Docker image
-        if: env.SHOULD_DEPLOY == 'true'
         run: |
           docker build -t "${{ env.IMAGE_URI }}" .
           docker push "${{ env.IMAGE_URI }}"
 
       - name: Deploy Cloud Run service
-        if: env.SHOULD_DEPLOY == 'true'
         run: |
           gcloud run deploy "my-finance-ui-${{ env.ENV }}" \
             --image "${{ env.IMAGE_URI }}" \

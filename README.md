@@ -1,4 +1,7 @@
 # My Finance UI
+[![Backend API](https://img.shields.io/badge/Backend%20API-my__finance__api-181717?logo=github)](https://github.com/rasmushaa/my_finance_api)
+[![Tests](https://github.com/rasmushaa/my_finance_ui/actions/workflows/tests.yaml/badge.svg?branch=main)](https://github.com/rasmushaa/my_finance_ui/actions/workflows/tests.yaml)
+
 ## Streamlit Frontend for Fast, Clean Money Ops
 Personal finance workflows, but with less spreadsheet pain and more flow.
 
@@ -64,7 +67,7 @@ PYTHONPATH="$PWD" uv run streamlit run src/app.py --server.port 8080 --server.he
 ```
 
 ## Deployment (GitHub Actions -> Cloud Run)
-Deployment workflow: `.github/deploy.yaml`
+Deployment workflow: `.github/workflows/deploy.yaml`
 
 Branch behavior:
 - `main` deploys `ENV=prod`
