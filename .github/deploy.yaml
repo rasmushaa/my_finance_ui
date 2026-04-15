@@ -41,7 +41,7 @@ on:
     branches:
       - main
       - stg
-      - "feature/*"
+      - feature/*
 
 jobs:
   build-and-deploy:
