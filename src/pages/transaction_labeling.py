@@ -1,169 +1,289 @@
-""" Label processed dataframe from API.
+"""Label transformed transactions before persisting them to the backend."""
 
-This page shows the processed dataframe from the API 
-and allows the user to label the transactions with categories. 
-The categories are fetched from the API and shown in a selectbox. 
-The user can also see a help box with the category descriptions.
-"""
-import streamlit as st
-import requests
-import os
+from __future__ import annotations
+
 import time
-import st_yled as sty
-from src.core import focus, layout, logging
+from typing import Any
+
 import pandas as pd
+import requests
+import st_yled as sty
+import streamlit as st
+
+from src.core import focus, layout, logging
+from src.core.auth import require_authenticated_user
+from src.core.env import require_env
 from src.core.logging import append_api_error
 
 sty.init()
 layout.init_base_layout(info_col_ratio=0.2)
 
+REQUEST_TIMEOUT_SECONDS = 30
+STATE_EDITING = 0
+STATE_SAVING = 1
+STATE_REDIRECTING = 2
 
-# -- Helpers ---------------------------------------
+
 @st.cache_data
-def get_labels() -> dict:
-    """ The labels are never updated in the UI
-    
+def get_labels() -> list[dict[str, str]]:
+    """Fetch transaction labels from the backend API.
+
     Returns
     -------
-    dict
-        A dictionary of label: comment pairs
+    list[dict[str, str]]
+        Label records containing keys such as ``key`` and ``description``.
     """
-    r = requests.get(
-        os.environ['API_BASE_URL'] + "/app/v1/transactions/labels", 
-        headers={"Authorization": f"Bearer {st.session_state['user'].token}"}
-        )
-    return r.json().get('labels', {}) if r.status_code == 200 else append_api_error(r)
+    user = require_authenticated_user()
+    response = requests.get(
+        f"{require_env('API_BASE_URL')}/app/v1/transactions/labels",
+        headers={"Authorization": f"Bearer {user.token}"},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if response.status_code == 200:
+        return response.json().get("labels", [])
+
+    append_api_error(response)
+    return []
+
 
 def category_formatter(category: str) -> str:
-    """ Adds emojis to the category names for better UX.
+    """Decorate category labels with optional emoji prefixes.
 
-    If a new label is added in the backend, 
-    it will be shown without an emoji.
+    Parameters
+    ----------
+    category : str
+        Raw category key from the backend.
+
+    Returns
+    -------
+    str
+        Human-friendly category display label.
     """
     mapping = {
-        'HOUSEHOLD-ITEMS': '🛋️ - ' + category,
-        'TECHNOLOGY': '💻 - ' + category,
-        'HEALTH': '💊 - ' + category,
-        'COMMUTING': '🚃 - ' + category,
-        'CLOTHING': '👕 - ' + category,
-        'SALARY': '💶 - ' + category,
-        'HOBBIES': '💪🏻 - ' + category,
-        'UNCATEGORIZED': '❔ - ' + category,
-        'FOOD': '🛒 - ' + category,
-        'LIVING': '🏠 - ' + category,
-        'OTHER-INCOME': '🤝 - ' + category,
-        'ENTERTAINMENT': '🎉 - ' + category,
-        'INVESTING': '📈 - ' + category,
+        "HOUSEHOLD-ITEMS": "🛋️ - " + category,
+        "TECHNOLOGY": "💻 - " + category,
+        "HEALTH": "💊 - " + category,
+        "COMMUTING": "🚃 - " + category,
+        "CLOTHING": "👕 - " + category,
+        "SALARY": "💶 - " + category,
+        "HOBBIES": "💪🏻 - " + category,
+        "UNCATEGORIZED": "❔ - " + category,
+        "FOOD": "🛒 - " + category,
+        "LIVING": "🏠 - " + category,
+        "OTHER-INCOME": "🤝 - " + category,
+        "ENTERTAINMENT": "🎉 - " + category,
+        "INVESTING": "📈 - " + category,
     }
     return mapping.get(category, category)
 
+
 @st.dialog("Labeling Help")
-def help():
-    """ Shows the help box for label comments
-    """
-    message = "Here you can label your transactions. The categories are:\n\n"
-    for label in get_labels():
+def help_dialog() -> None:
+    """Render a modal with label descriptions from backend metadata."""
+    labels = get_labels()
+    if not labels:
+        st.write("No label metadata available.")
+        return
+
+    message = "Here you can label your transactions. Available categories:\n\n"
+    for label in labels:
         message += f"- **{label['key']}**: {label['description']}\n"
     st.markdown(message)
 
-def get_latest_entry() -> str:
-    r = requests.get(
-        os.environ['API_BASE_URL'] + "/app/v1/transactions/latest-entry", 
-        headers={"Authorization": f"Bearer {st.session_state['user'].token}"}
-        )
-    if r.status_code == 200:
-        return r.json().get('latest_entry_date', None)
-    logging.append_api_error(r)
+
+def get_latest_entry() -> str | None:
+    """Fetch the latest stored transaction date from the backend.
+
+    Returns
+    -------
+    str | None
+        Latest entry date in ISO format or ``None`` when unavailable.
+    """
+    user = require_authenticated_user()
+    response = requests.get(
+        f"{require_env('API_BASE_URL')}/app/v1/transactions/latest-entry",
+        headers={"Authorization": f"Bearer {user.token}"},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if response.status_code == 200:
+        return response.json().get("latest_entry_date")
+
+    logging.append_api_error(response)
     return None
 
 
-# -- Init page state ---------------------------------------
-if focus.changed():
-    if 'processed_file_df' not in st.session_state: # This should never happen, but check anyway
+def initialize_page_state() -> None:
+    """Initialize session state that should refresh on page navigation."""
+    if not focus.changed():
+        return
+
+    logging.clear_logs()
+
+    if "processed_file_df" not in st.session_state:
         st.error("No processed file found. Please upload a file first.")
         time.sleep(2)
         st.switch_page("pages/transaction_input.py")
+        st.stop()
 
-    st.session_state["processed_file_df"]["Date"] = pd.to_datetime(st.session_state["processed_file_df"]["Date"])
-    month_names_in_data = st.session_state["processed_file_df"]["Date"].dt.month_name().unique()
-
-    if len(month_names_in_data) == 1:
-        logging.append_info(f"Transactions contains data only for {month_names_in_data[0]}. Ok to label.")
+    dataframe = st.session_state["processed_file_df"]
+    dataframe["Date"] = pd.to_datetime(dataframe["Date"])
+    month_names = dataframe["Date"].dt.month_name().unique()
+    if len(month_names) == 1:
+        logging.append_info(f"Transactions contain data only for {month_names[0]}.")
     else:
-        logging.append_error(f"Transactions contains data for multiple months: {', '.join(month_names_in_data)}. Ok to label, but check the dates carefully.")
+        logging.append_error(
+            "Transactions contain data for multiple months: "
+            f"{', '.join(month_names)}. Please review dates carefully."
+        )
 
-    if get_latest_entry() is not None and st.session_state["processed_file_df"]["Date"].min() <= pd.to_datetime(get_latest_entry()):
-        logging.append_error(f"The oldest entry in your transactions is from {st.session_state['processed_file_df']['Date'].min().date()}, but you have already recorded transactions up to {get_latest_entry()}. Please check the dates carefully to avoid duplicate entries.")
+    latest_entry_date = get_latest_entry()
+    if latest_entry_date is not None:
+        if dataframe["Date"].min() <= pd.to_datetime(latest_entry_date):
+            logging.append_error(
+                "The oldest transaction in this file is "
+                f"{dataframe['Date'].min().date()}, but existing data already extends "
+                f"to {latest_entry_date}. Please review to avoid duplicates."
+            )
 
-    st.session_state["state"] = 0 # 0 = editing, 1 = saving, 2 = redirecting
-
-
-# -- The page layout ---------------------------------------
-_, base_col, _ = layout.main_col().columns([2, 7, 1], gap="large")
-with base_col:
-    base_container = sty.container(border=True, background_color="rgb(250, 250, 246)", padding=30)
-    button_container = base_container.container(horizontal=True)
-
-
-# -- Data editor -------------------------------------
-edited_df = base_container.data_editor(
-    st.session_state['processed_file_df'],
-    column_config={
-        'Date': st.column_config.Column(
-            'Date',
-            disabled=True,
-        ),
-        'Receiver': st.column_config.Column(
-            'Receiver',
-            disabled=True,
-        ),
-        'Amount': st.column_config.Column(
-            'Amount',
-            disabled=True,
-        ),
-        "Category": st.column_config.SelectboxColumn(
-            'Category',
-            options=[label["key"] for label in get_labels()],
-            format_func=category_formatter,
-        ),
-        "RowProcessingID": None,  # Hidden column for processing the data later
-    },
-    hide_index=True,
-    height=35*20+38
-)
+    st.session_state["state"] = STATE_EDITING
 
 
-# -- Buttons ---------------------------------------
-button_container.header("Label your transactions")
-button_container.button("Help", on_click=help)
+def build_layout() -> tuple[Any, Any]:
+    """Build the page's primary card and button row.
 
-match st.session_state["state"]:
-    case 0:  # 0 = editing
-        if button_container.button('Save changes', width="content", type='primary'):
-            st.session_state["state"] += 1
-            st.rerun()
-        
-    case 1:  # 1 = saving
-        button_container.button('Saving...', width="content", type='primary', disabled=True)
-        r = requests.post(
-            os.environ['API_BASE_URL'] + "/app/v1/transactions/upload",
-            files={
+    Returns
+    -------
+    tuple[Any, Any]
+        Base content container and button container.
+    """
+    _, base_col, _ = layout.main_col().columns([2, 7, 1], gap="large")
+    with base_col:
+        base_container = sty.container(
+            border=True,
+            background_color="rgb(250, 250, 246)",
+            padding=30,
+        )
+        button_container = base_container.container(horizontal=True)
+    return base_container, button_container
+
+
+def render_data_editor(base_container: Any) -> pd.DataFrame:
+    """Render editable transaction table.
+
+    Parameters
+    ----------
+    base_container : Any
+        Streamlit or st-yled container for page content.
+
+    Returns
+    -------
+    pd.DataFrame
+        User-edited dataframe.
+    """
+    labels = get_labels()
+    label_keys = [label["key"] for label in labels]
+    if not label_keys:
+        st.error("No transaction labels are available. Please configure labels first.")
+        st.stop()
+    return base_container.data_editor(
+        st.session_state["processed_file_df"],
+        column_config={
+            "Date": st.column_config.Column("Date", disabled=True),
+            "Receiver": st.column_config.Column("Receiver", disabled=True),
+            "Amount": st.column_config.Column("Amount", disabled=True),
+            "Category": st.column_config.SelectboxColumn(
+                "Category",
+                options=label_keys,
+                format_func=category_formatter,
+            ),
+            "RowProcessingID": None,
+        },
+        hide_index=True,
+        height=35 * 20 + 38,
+    )
+
+
+def save_labeled_transactions(edited_df: pd.DataFrame) -> bool:
+    """Upload labeled transactions to backend storage.
+
+    Parameters
+    ----------
+    edited_df : pd.DataFrame
+        Labeled transactions from the table editor.
+
+    Returns
+    -------
+    bool
+        ``True`` on successful upload, otherwise ``False``.
+    """
+    user = require_authenticated_user()
+    response = requests.post(
+        f"{require_env('API_BASE_URL')}/app/v1/transactions/upload",
+        files={
             "file": (
                 "transformed_data.csv",
                 edited_df.to_csv(index=False),
                 "text/csv",
-                )
-            },
-            headers={"Authorization": f"Bearer {st.session_state['user'].token}"}
-        )
-        if r.status_code == 200:
-            logging.append_success('Changes saved successfully!')
-        else:
-            logging.append_api_error(r)
-        st.session_state["state"] += 1
-        st.rerun()
+            )
+        },
+        headers={"Authorization": f"Bearer {user.token}"},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if response.status_code == 200:
+        logging.append_success("Changes saved successfully.")
+        return True
 
-    case 2:  # 2 = redirecting  
-        logging.clear_logs()
-        time.sleep(2)
-        st.switch_page("pages/transaction_input.py")
+    logging.append_api_error(response)
+    return False
+
+
+def run_state_machine(button_container: Any, edited_df: pd.DataFrame) -> None:
+    """Run the page-level save state machine.
+
+    Parameters
+    ----------
+    button_container : Any
+        Streamlit container hosting action buttons.
+    edited_df : pd.DataFrame
+        Edited dataframe to save when requested.
+    """
+    button_container.header("Label your transactions")
+    button_container.button("Help", on_click=help_dialog)
+
+    st.session_state.setdefault("state", STATE_EDITING)
+    match st.session_state["state"]:
+        case 0:
+            if button_container.button("Save changes", width="content", type="primary"):
+                st.session_state["state"] = STATE_SAVING
+                st.rerun()
+
+        case 1:
+            button_container.button(
+                "Saving...",
+                width="content",
+                type="primary",
+                disabled=True,
+            )
+            save_labeled_transactions(edited_df)
+            st.session_state["state"] = STATE_REDIRECTING
+            st.rerun()
+
+        case 2:
+            logging.clear_logs()
+            time.sleep(2)
+            st.switch_page("pages/transaction_input.py")
+
+        case _:
+            st.error("Unknown state. Please refresh the page.")
+
+
+def main() -> None:
+    """Render and run the transaction labeling page."""
+    require_authenticated_user()
+    initialize_page_state()
+    base_container, button_container = build_layout()
+    edited_df = render_data_editor(base_container)
+    run_state_machine(button_container, edited_df)
+
+
+main()

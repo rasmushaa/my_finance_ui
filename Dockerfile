@@ -15,6 +15,8 @@ ENV ENV=${ENV}
 # Keep the project virtualenv inside the app directory
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv
 ENV PATH="/app/.venv/bin:${PATH}"
+# Ensure absolute imports like `from src...` work when Streamlit executes src/app.py.
+ENV PYTHONPATH="/app"
 
 # Copy dependency metadata first for better caching
 COPY pyproject.toml /app/
@@ -32,4 +34,4 @@ USER appuser
 
 EXPOSE 8080
 
-CMD ["uv", "run", "streamlit", "run", "src/app.py", "--server.port=8080"]
+CMD ["uv", "run", "streamlit", "run", "src/app.py", "--server.port=8080", "--server.address=0.0.0.0"]

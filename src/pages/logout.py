@@ -1,9 +1,14 @@
-""" Simple no input page,
+"""Logout page that clears session state and redirects to login."""
 
-so it can be included in the sidebar for logging out, 
-and then redirecting back to the login page.
-"""
+from __future__ import annotations
+
 import streamlit as st
 
-st.session_state.clear()
-st.switch_page('pages/login.py')
+
+def main() -> None:
+    """Clear the active session and redirect the user to the login page."""
+    st.session_state.clear()
+    st.switch_page("pages/login.py")
+
+
+main()
