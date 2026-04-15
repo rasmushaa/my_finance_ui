@@ -1,0 +1,135 @@
+# Deploy Streamlit UI to Cloud Run Workflow
+#
+# This workflow builds and deploys a Streamlit application to Google Cloud Run.
+#
+# BRANCH LOGIC:
+# - main branch         → build + deploy to production environment (ENV=prod)
+# - stg branch          → build + deploy to staging environment (ENV=stg)
+# - feature/* branches  → compile/validate only (no deployment)
+#
+# DOCKER IMAGE:
+# - Single-stage build; dependencies installed via uv inside the image
+# - Images tagged by environment: streamlit-prod:latest or streamlit-stg:latest
+#
+# REQUIRED GITHUB SECRETS:
+# Authentication & Infrastructure:
+#   GCP_PROJECT_ID                 - Google Cloud project ID
+#   GCP_LOCATION                   - Google Cloud region (e.g., europe-north1)
+#   GCP_WORKLOAD_IDENTITY_POOL     - Workload Identity Federation in format
+#                                    "projects/<project-number>/locations/global/workloadIdentityPools/<pool-name>/providers/<provider-name>"
+#   GCP_DEPLOY_SA                  - Service account email used to deploy (needs Cloud Run Admin, AR Writer)
+#   GCP_MY_FINANCE_UI_SA           - Service account email the Cloud Run service runs as
+#
+# Application Configuration:
+#   GOOGLE_CLIENT_ID               - Google OAuth client ID for user authentication
+#   API_BASE_URL_PROD              - Backend API base URL for production
+#   API_BASE_URL_STG               - Backend API base URL for staging
+#   REDIRECT_URI_PROD              - OAuth redirect URI for production
+#   REDIRECT_URI_STG               - OAuth redirect URI for staging
+#
+# Runtime Environment Variables (injected via env-vars.yaml at deploy time):
+#   ENV                            - Application environment (prod, stg, dev)
+#   API_BASE_URL                   - Backend API base URL (resolved from branch)
+#   GOOGLE_CLIENT_ID               - Google OAuth client ID
+#   REDIRECT_URI                   - OAuth redirect URI (resolved from branch)
+#
+#
+name: Deploy Streamlit UI
+
+on:
+  push:
+    branches:
+      - main
+      - stg
+      - "feature/*"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Resolve branch environment
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "ENV=prod" >> "$GITHUB_ENV"
+            echo "IMAGE_URI=${{ secrets.GCP_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/my-finance/streamlit-prod:latest" >> "$GITHUB_ENV"
+            echo "API_BASE_URL=${{ secrets.API_BASE_URL_PROD }}" >> "$GITHUB_ENV"
+            echo "REDIRECT_URI=${{ secrets.REDIRECT_URI_PROD }}" >> "$GITHUB_ENV"
+            echo "SHOULD_DEPLOY=true" >> "$GITHUB_ENV"
+          elif [ "${{ github.ref_name }}" = "stg" ]; then
+            echo "ENV=stg" >> "$GITHUB_ENV"
+            echo "IMAGE_URI=${{ secrets.GCP_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/my-finance/streamlit-stg:latest" >> "$GITHUB_ENV"
+            echo "API_BASE_URL=${{ secrets.API_BASE_URL_STG }}" >> "$GITHUB_ENV"
+            echo "REDIRECT_URI=${{ secrets.REDIRECT_URI_STG }}" >> "$GITHUB_ENV"
+            echo "SHOULD_DEPLOY=true" >> "$GITHUB_ENV"
+          else
+            echo "ENV=dev" >> "$GITHUB_ENV"
+            echo "SHOULD_DEPLOY=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_POOL }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker "${{ secrets.GCP_LOCATION }}-docker.pkg.dev"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Create virtual environment
+        run: uv venv
+
+      - name: Install dependencies
+        run: |
+          uv sync --group dev
+          python --version
+          uv pip list
+
+      - name: Run tests
+        run: uv pytest
+
+      - name: Write Cloud Run env vars file
+        if: env.SHOULD_DEPLOY == 'true'
+        run: |
+          cat <<EOF > env-vars.yaml
+          API_BASE_URL: "${{ env.API_BASE_URL }}"
+          GOOGLE_CLIENT_ID: "${{ secrets.GOOGLE_CLIENT_ID }}"
+          REDIRECT_URI: "${{ env.REDIRECT_URI }}"
+          ENV: "${{ env.ENV }}"
+          EOF
+
+      - name: Build and push Docker image
+        if: env.SHOULD_DEPLOY == 'true'
+        run: |
+          docker build -t "${{ env.IMAGE_URI }}" .
+          docker push "${{ env.IMAGE_URI }}"
+
+      - name: Deploy Cloud Run service
+        if: env.SHOULD_DEPLOY == 'true'
+        run: |
+          gcloud run deploy "my-finance-ui-${{ env.ENV }}" \
+            --image "${{ env.IMAGE_URI }}" \
+            --region "${{ secrets.GCP_LOCATION }}" \
+            --service-account "${{ secrets.GCP_MY_FINANCE_UI_SA }}" \
+            --env-vars-file env-vars.yaml \
+            --port 8080 \
+            --cpu 1 \
+            --memory 500Mi \
+            --max-instances 1 \
+            --allow-unauthenticated
