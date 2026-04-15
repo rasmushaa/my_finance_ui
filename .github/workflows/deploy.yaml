@@ -93,7 +93,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Create virtual environment
-        run: uv venv
+        run: uv venv 
 
       - name: Install dependencies
         run: |
@@ -102,7 +102,7 @@ jobs:
           uv pip list
 
       - name: Run tests
-        run: uv pytest
+        run: uv run pytest
 
       - name: Write Cloud Run env vars file
         if: env.SHOULD_DEPLOY == 'true'
