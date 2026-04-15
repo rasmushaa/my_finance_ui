@@ -364,7 +364,7 @@ def run_page() -> None:
         "cash": input_asset_cash,
         "apartment": input_asset_apartment,
         "other_assets": input_asset_other,
-        "capital_assets_value": input_asset_capital_market,
+        "capital_assets_market_value": input_asset_capital_market,
         "capital_assets_unrealized_gains": input_asset_capital_unrealized,
         "mortgage": input_liability_mortgage,
         "student_loan": input_liability_student_loan,
